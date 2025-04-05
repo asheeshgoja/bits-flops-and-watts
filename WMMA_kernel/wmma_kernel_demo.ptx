@@ -1,0 +1,48 @@
+.version 7.0
+.target sm_80
+.address_size 64
+
+.visible .entry wmma_kernel(
+    .param .u64 a,          // Input matrix A (fp16)
+    .param .u64 b,          // Input matrix B (fp16)
+    .param .u64 c,          // Input accumulator matrix C (fp32)
+    .param .u64 d           // Output matrix D (fp32)
+) {
+    .reg .b32 %r<8>;       // General purpose registers
+    .reg .b64 %rd<8>;      // Address registers
+    .reg .pred %p;         // Predicate register
+    
+    // Declare matrix fragments - corrected for SM90
+    .reg .f32 %C_reg<8>;     // Fragment C registers
+    .reg .f32 %D_reg<8>;     // Fragment D registers
+    .reg .f16x2 %A_reg<8>;   // Fragment A registers - increased to 8
+    .reg .f16x2 %B_reg<8>;   // Fragment B registers - increased to 8
+
+    // Get thread ID and check if thread is in first warp
+    mov.u32 %r1, %tid.x;
+    setp.lt.u32 %p, %r1, 32;
+    @!%p bra EXIT;         // Only first warp performs WMMA
+    
+    // Load input pointers
+    ld.param.u64 %rd1, [a];
+    ld.param.u64 %rd2, [b];
+    ld.param.u64 %rd3, [c];
+    ld.param.u64 %rd4, [d];
+    
+    // Load matrix tiles into Tensor Core registers
+    wmma.load.a.sync.aligned.m16n16k16.row.f16 {%A_reg0, %A_reg1, %A_reg2, %A_reg3, %A_reg4, %A_reg5, %A_reg6, %A_reg7}, [%rd1];
+    wmma.load.b.sync.aligned.m16n16k16.col.f16 {%B_reg0, %B_reg1, %B_reg2, %B_reg3, %B_reg4, %B_reg5, %B_reg6, %B_reg7}, [%rd2];
+    wmma.load.c.sync.aligned.m16n16k16.row.f32 {%C_reg0, %C_reg1, %C_reg2, %C_reg3, %C_reg4, %C_reg5, %C_reg6, %C_reg7}, [%rd3];
+    
+    // Perform matrix multiply-accumulate with correct register counts
+    wmma.mma.sync.aligned.m16n16k16.row.col.f32.f32 {%D_reg0, %D_reg1, %D_reg2, %D_reg3, %D_reg4, %D_reg5, %D_reg6, %D_reg7}, 
+        {%A_reg0, %A_reg1, %A_reg2, %A_reg3, %A_reg4, %A_reg5, %A_reg6, %A_reg7}, 
+        {%B_reg0, %B_reg1, %B_reg2, %B_reg3, %B_reg4, %B_reg5, %B_reg6, %B_reg7}, 
+        {%C_reg0, %C_reg1, %C_reg2, %C_reg3, %C_reg4, %C_reg5, %C_reg6, %C_reg7};
+    
+    // Store result
+    wmma.store.d.sync.aligned.m16n16k16.row.f32 [%rd4], {%D_reg0, %D_reg1, %D_reg2, %D_reg3, %D_reg4, %D_reg5, %D_reg6, %D_reg7};
+    
+EXIT:
+    ret;
+} 
